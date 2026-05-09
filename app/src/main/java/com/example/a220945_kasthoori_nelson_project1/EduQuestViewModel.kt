@@ -8,7 +8,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// Updated UserProfile with the dynamic "Level Up & Title" logic
+// Data Classes define the structure of our data.
+// UserProfile acts as our single source of truth for the player's current status.
 data class UserProfile(
     val name: String = "",
     val matricNumber: String = "",
@@ -16,9 +17,10 @@ data class UserProfile(
     val totalXP: Int = 0,
     val currentStreak: Int = 0,
     val lastActiveDate: String = "",
-    val lessonHighScores: Map<String, Int> = emptyMap()
+    val lessonHighScores: Map<String, Int> = emptyMap() // Map to remember best scores (e.g., "MAD_Lesson1" = 3)
 ) {
-    // NEW: Automatically calculates the player's title based on current XP!
+    // This is a "computed property". It automatically checks totalXP and returns the right title.
+    // It updates dynamically without needing a separate function.
     val currentTitle: String
         get() = when (totalXP) {
             in 0..499 -> "Novice Coder"
@@ -28,7 +30,7 @@ data class UserProfile(
         }
 }
 
-// Defines the course structure, separating core courses from Citra electives
+// Data class for the built-in university courses
 data class Course(
     val id: String,
     val title: String,
@@ -37,7 +39,7 @@ data class Course(
     val progress: Float = 0f
 )
 
-// Data class for user-created tasks
+// Data class for the user-generated tasks (Project 1 "Add Item" requirement)
 data class CustomQuest(
     val id: Int,
     val title: String,
@@ -45,13 +47,17 @@ data class CustomQuest(
 )
 
 class EduQuestViewModel : ViewModel() {
+
+    // --- STATE MANAGEMENT ---
+    // We use MutableStateFlow privately so only the ViewModel can change the data.
+    // We expose it publicly as StateFlow (read-only) so the UI can observe it safely.
     private val _uiState = MutableStateFlow(UserProfile())
     val uiState: StateFlow<UserProfile> = _uiState.asStateFlow()
 
     private val _selectedQuest = MutableStateFlow("")
     val selectedQuest: StateFlow<String> = _selectedQuest.asStateFlow()
 
-    // ENRICHED CITRA COURSE DESCRIPTIONS!
+    // Holds the master list of all 10 courses in memory
     private val _allCourses = MutableStateFlow(
         listOf(
             Course("MAD", "Mobile Application Development", true, "Basic UI, Interaction, and Material Design.", 0f),
@@ -68,40 +74,42 @@ class EduQuestViewModel : ViewModel() {
     )
     val allCourses: StateFlow<List<Course>> = _allCourses.asStateFlow()
 
+    // Updates profile details. We use .copy() to keep gamification stats intact.
     fun updateProfile(newName: String, newMatric: String, newProgram: String) {
         val currentProfile = _uiState.value
         _uiState.value = UserProfile(newName, newMatric, newProgram, currentProfile.totalXP, currentProfile.currentStreak, currentProfile.lastActiveDate, currentProfile.lessonHighScores)
     }
 
+    // Stores the ID of the course the user just clicked on the Dashboard
     fun selectQuest(questId: String) {
         _selectedQuest.value = questId
     }
 
-    // SMART XP LOGIC: Calculates exactly how much new XP they deserve
+    // --- CORE COURSE LOGIC (Smart Gamification) ---
+    // Calculates fair XP based on high scores and checks the date for streaks
     fun completeQuiz(courseId: String, lessonId: String, score: Int) {
         val currentProfile = _uiState.value
 
-        // Find their previous best score (defaults to 0 if playing for the first time)
+        // Check memory bank for previous high score to calculate ONLY the new XP earned
         val previousHighScore = currentProfile.lessonHighScores[lessonId] ?: 0
-
-        // If they scored higher than before, they get the missing XP! (50 per question)
         val newXPEarned = if (score > previousHighScore) {
             (score - previousHighScore) * 50
         } else {
             0
         }
 
-        // Update the high score map
+        // Save the new high score if they beat their old record
         val updatedHighScores = currentProfile.lessonHighScores.toMutableMap()
         if (score > previousHighScore) {
             updatedHighScores[lessonId] = score
         }
 
-        // Streak logic
+        // Streak logic: Check if today's date matches the last active date
         val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
         val todayDate = sdf.format(Date())
         val newStreak = if (currentProfile.lastActiveDate == todayDate) currentProfile.currentStreak else currentProfile.currentStreak + 1
 
+        // Apply all changes to the UI state
         _uiState.value = currentProfile.copy(
             totalXP = currentProfile.totalXP + newXPEarned,
             currentStreak = newStreak,
@@ -109,10 +117,10 @@ class EduQuestViewModel : ViewModel() {
             lessonHighScores = updatedHighScores
         )
 
-        // Update Course Progress based on total questions mastered across the 2 lessons
-        // 6 total questions per course. Each newly mastered question gives 16.6% progress.
+        // Add 16.6% progress for every new question mastered
         val progressEarned = if (score > previousHighScore) ((score - previousHighScore).toFloat() / 6f) else 0f
 
+        // Loop through courses and update only the active one
         val updatedCourses = _allCourses.value.map { course ->
             if (course.id == courseId) {
                 course.copy(progress = (course.progress + progressEarned).coerceAtMost(1f))
@@ -121,12 +129,22 @@ class EduQuestViewModel : ViewModel() {
         _allCourses.value = updatedCourses
     }
 
-    // Generic completion for reading tasks (Citra)
+    // --- CITRA COURSE LOGIC ---
+    // Instantly grants 100% progress and 50 XP, plus updates the streak
     fun completeReading(courseId: String) {
         val currentCourse = _allCourses.value.find { it.id == courseId }
         if (currentCourse != null && currentCourse.progress < 1f) {
             val currentProfile = _uiState.value
-            _uiState.value = currentProfile.copy(totalXP = currentProfile.totalXP + 50)
+
+            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            val todayDate = sdf.format(Date())
+            val newStreak = if (currentProfile.lastActiveDate == todayDate) currentProfile.currentStreak else currentProfile.currentStreak + 1
+
+            _uiState.value = currentProfile.copy(
+                totalXP = currentProfile.totalXP + 50,
+                currentStreak = newStreak,
+                lastActiveDate = todayDate
+            )
 
             val updatedCourses = _allCourses.value.map { course ->
                 if (course.id == courseId) course.copy(progress = 1f) else course
@@ -135,6 +153,7 @@ class EduQuestViewModel : ViewModel() {
         }
     }
 
+    // Wipes all temporary state memory for a fresh start
     fun resetApp() {
         _uiState.value = UserProfile()
         _selectedQuest.value = ""
@@ -142,19 +161,33 @@ class EduQuestViewModel : ViewModel() {
         _allCourses.value = resetCourses
     }
 
-    // --- CUSTOM QUESTS LOGIC REMAINS THE SAME ---
+    // --- PROJECT 1 REQUIREMENT: CUSTOM QUESTS (ADD/DELETE ITEMS) ---
     private val _customQuests = MutableStateFlow<List<CustomQuest>>(emptyList())
     val customQuests: StateFlow<List<CustomQuest>> = _customQuests.asStateFlow()
+
     private var nextQuestId = 1
 
+    // Creates a new CustomQuest object and appends it to our StateFlow list
     fun addCustomQuest(title: String, xp: Int) {
         val newQuest = CustomQuest(nextQuestId++, title, xp)
         _customQuests.value = _customQuests.value + newQuest
     }
 
+    // Grants the XP, checks the daily streak, and filters the completed quest out of the list
     fun completeCustomQuest(quest: CustomQuest) {
         val currentProfile = _uiState.value
-        _uiState.value = currentProfile.copy(totalXP = currentProfile.totalXP + quest.xpReward)
+
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val todayDate = sdf.format(Date())
+        val newStreak = if (currentProfile.lastActiveDate == todayDate) currentProfile.currentStreak else currentProfile.currentStreak + 1
+
+        _uiState.value = currentProfile.copy(
+            totalXP = currentProfile.totalXP + quest.xpReward,
+            currentStreak = newStreak,
+            lastActiveDate = todayDate
+        )
+
+        // Replaces the list with a new list that excludes the finished quest
         _customQuests.value = _customQuests.value.filter { it.id != quest.id }
     }
 }
